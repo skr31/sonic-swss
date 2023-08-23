@@ -45,6 +45,7 @@
 #include "bfdorch.h"
 #include "srv6orch.h"
 #include "nvgreorch.h"
+#include "txmonorch.h"
 #include <sairedis.h>
 
 using namespace swss;
