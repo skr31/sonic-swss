@@ -5,7 +5,9 @@
 
 using namespace swss;
 
-const uint32_t DEFAULT_TIME_PERIOD = 10;
+const uint32_t POLLING_INTERVAL = 1;
+const uint32_t DEFAULT_TIME_PERIOD = 30;
+const uint32_t DEFAULT_THRESHOLD = 200;
 const std::string MONITORED_COUNTER = "SAI_PORT_STAT_ETHER_RX_OVERSIZE_PKTS";
 
 TXMonOrch::TXMonOrch(DBConnector *db, const std::string tableName): Orch(db, tableName),
@@ -14,12 +16,17 @@ TXMonOrch::TXMonOrch(DBConnector *db, const std::string tableName): Orch(db, tab
     m_countersMapTable(new Table(m_countersDb.get(), COUNTERS_PORT_NAME_MAP)),
     m_stateDb(new DBConnector("STATE_DB", 0)),
     m_stateTable(new Table(m_stateDb.get(), "TX_MONITOR_TABLE")),
-    m_threshold(200),
-    m_timer(new SelectableTimer(timespec { .tv_sec = DEFAULT_TIME_PERIOD, .tv_nsec = 0 }))
+    m_threshold(DEFAULT_THRESHOLD),
+    m_resettingTimer(new SelectableTimer(timespec { .tv_sec = DEFAULT_TIME_PERIOD, .tv_nsec = 0 })),
+    m_pollingTimer(new SelectableTimer(timespec { .tv_sec = POLLING_INTERVAL, .tv_nsec = 0 }))
     {
-        auto executorTimer = new ExecutableTimer(m_timer, this, "TX_MONITOR_TIMER");
-        Orch::addExecutor(executorTimer);
-        m_timer->start();
+        auto execResetTimer = new ExecutableTimer(m_resettingTimer, this, "TX_MONITOR_TIMER");
+        Orch::addExecutor(execResetTimer);
+        m_resettingTimer->start();
+        auto execPollTimer = new ExecutableTimer(m_pollingTimer, this, "POLLING_TIMER");
+        Orch::addExecutor(execPollTimer);
+        m_pollingTimer->start();
+
     }
 
 void TXMonOrch::doTask(Consumer& consumer)
@@ -46,7 +53,6 @@ void TXMonOrch::doTask(Consumer& consumer)
         if (op == SET_COMMAND)
         {
             handleSetCommand(key, values);
-            SWSS_LOG_INFO("TESTING TX MON: %d", m_threshold);
         }
         else
         {
@@ -88,8 +94,8 @@ void TXMonOrch::handleSetCommand(const std::string& key, const std::vector<Field
 void TXMonOrch::setTimePeriod(const std::string newTimePeriod)
 {
     auto intervT = timespec { .tv_sec = static_cast<time_t>(to_uint<uint32_t>(newTimePeriod.c_str())), .tv_nsec = 0 };
-    m_timer->setInterval(intervT);
-    m_timer->reset();
+    m_resettingTimer->setInterval(intervT);
+    m_resettingTimer->reset();
 }
 
 void TXMonOrch::setThreshold(const std::string newThreshold)
@@ -100,13 +106,6 @@ void TXMonOrch::setThreshold(const std::string newThreshold)
 void TXMonOrch::doTask(SelectableTimer &timer)
 {
     SWSS_LOG_ENTER();
-
-    SWSS_LOG_INFO("TESTING TX MON TIMER");
-    checkMonitoredCounters();
-}
-
-void TXMonOrch::checkMonitoredCounters()
-{
     mapAliasesToPorts();
 
     for (auto const& port: m_aliasToPortMap)
@@ -123,19 +122,41 @@ void TXMonOrch::checkMonitoredCounters()
                 std::string counter_type = current.first;
                 std::string counter_value = current.second;
 
-                if (counter_type == )
+                if (counter_type == MONITORED_COUNTER)
                 {
-                    std::string isOK = (to_uint<uint32_t>(counter_value.c_str()) - m_lastErrCounts[eth_name] < m_threshold) ? "OK" : "NOT_OK"; 
-                    m_lastErrCounts[eth_name] = to_uint<uint32_t>(counter_value.c_str());
-                    std::vector<FieldValueTuple> fvs;
-                    fvs.emplace_back("status", isOK);
-                    m_stateTable->set(eth_name, fvs);
+                    if (&timer == m_resettingTimer)
+                    {
+                        updateLastErrCount(eth_name, counter_value);
+                    }
+                    else if (&timer == m_pollingTimer)
+                    {
+                        checkMonitoredCounter(eth_name, counter_value);
+                    }
                 }
             }
         }
-    }  
+    }
 }
- 
+
+void TXMonOrch::updateLastErrCount(std::string eth_name, std::string counter_value)
+{
+    m_lastErrCounts[eth_name] = to_uint<uint32_t>(counter_value.c_str());
+    std::vector<FieldValueTuple> fvs;
+    fvs.emplace_back("status", "OK");
+    m_stateTable->set(eth_name, fvs);
+    
+}
+
+void TXMonOrch::checkMonitoredCounter(std::string eth_name, std::string counter_value)
+{
+    if (to_uint<uint32_t>(counter_value.c_str()) - m_lastErrCounts[eth_name] > m_threshold)
+    {
+        std::vector<FieldValueTuple> fvs;
+        fvs.emplace_back("status", "NOT_OK");
+        m_stateTable->set(eth_name, fvs);
+    }
+}
+
 void TXMonOrch::mapAliasesToPorts()
 {
     std::vector<FieldValueTuple> counterTuples;

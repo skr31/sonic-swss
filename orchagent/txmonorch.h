@@ -17,7 +17,8 @@ private:
     void handleSetCommand(const std::string& key, const std::vector<FieldValueTuple>& data);
     void setTimePeriod(const std::string newTimePeriod);
     void setThreshold(const std::string newThreshold);
-    void checkTXCounters();
+    void checkMonitoredCounter(std::string eth_name, std::string counter_value);
+    void updateLastErrCount(std::string eth_name, std::string counter_value);
     void mapAliasesToPorts();
 
     uint32_t m_threshold;
@@ -27,7 +28,8 @@ private:
     std::shared_ptr<swss::DBConnector> m_stateDb = nullptr;
     std::shared_ptr<swss::Table> m_stateTable = nullptr;
 
-    SelectableTimer *m_timer = nullptr;
+    SelectableTimer *m_resettingTimer = nullptr;
+    SelectableTimer *m_pollingTimer = nullptr;
     std::map<std::basic_string<char>, std::basic_string<char>> m_aliasToPortMap;
     std::map<std::basic_string<char>, uint32_t> m_lastErrCounts;
 };
